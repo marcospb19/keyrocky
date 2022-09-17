@@ -1,3 +1,4 @@
+pub mod binance;
 pub mod bitstamp;
 
 use tokio::net::TcpStream;
