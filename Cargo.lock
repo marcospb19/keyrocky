@@ -303,8 +303,10 @@ name = "keyrocky"
 version = "0.1.0"
 dependencies = [
  "futures",
+ "thiserror",
  "tokio",
  "tokio-tungstenite",
+ "tungstenite",
 ]
 
 [[package]]
