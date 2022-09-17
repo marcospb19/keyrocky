@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+clap = { version = "3.2.22", features = ["wrap_help", "derive"] }
 futures = "0.3.24"
 thiserror = "1.0.35"
 tokio = { version = "1.21.1", features = ["rt-multi-thread", "io-std", "macros"] }
