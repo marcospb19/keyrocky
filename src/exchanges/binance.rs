@@ -1,5 +1,3 @@
-use std::io::Write;
-
 use futures::SinkExt;
 use serde::Serialize;
 use tokio_tungstenite::connect_async;
@@ -14,22 +12,15 @@ pub async fn connect_and_subscribe(currency_pair: &CurrencyPair) -> Result<Excha
     let url = format!("{BINANCE_WEBSOCKET_BASE_URL}/{suffix}");
     let (mut stream, _) = connect_async(url).await?;
 
-    println!("binance handshake success!!!");
-    let _ = std::io::stdout().flush();
-
     let message = SubscribeMessage::new(currency_pair);
     let message = serde_json::to_string(&message).unwrap();
     let message = Message::Text(message);
-
-    println!("Subscring");
 
     if let err @ Err(_) = stream.send(message).await {
         // If possible, try closing the stream before returning error.
         let _ = stream.close(None);
         err?;
     }
-
-    println!("Subscribed successfully");
 
     Ok(stream)
 }
@@ -46,7 +37,7 @@ impl SubscribeMessage {
         let symbol = currency_pair.as_str().to_lowercase();
         Self {
             method: "SUBSCRIBE".into(),
-            params: vec![format!("{symbol}@aggTrade"), format!("{symbol}@depth")],
+            params: vec![format!("{symbol}@depth10@100ms")],
             id: 1,
         }
     }
@@ -54,24 +45,25 @@ impl SubscribeMessage {
 
 #[cfg(test)]
 mod tests {
-    // use serde_json::json;
+    use serde_json::json;
 
-    // use super::*;
+    use super::*;
 
-    // #[test]
-    // fn test_binance_serializing_subscribe_message() {
-    //     let currency_pair: CurrencyPair = "ETHBTC".parse().unwrap();
-    //     let message = SubscribeMessage::new(&currency_pair);
+    #[test]
+    fn test_binance_serializing_subscribe_message() {
+        let currency_pair: CurrencyPair = "ETHBTC".parse().unwrap();
+        let message = SubscribeMessage::new(&currency_pair);
 
-    //     let expected = json!({
-    //         "event": "bts:subscribe",
-    //         "data": {
-    //             "channel": "live_orders_ethbtc"
-    //         }
-    //     });
+        let expected = json!({
+            "method": "SUBSCRIBE",
+            "params": [
+                "ethbtc@depth10@100ms"
+            ],
+            "id": 1
+        });
 
-    //     let result = serde_json::to_value(message).unwrap();
+        let result = serde_json::to_value(message).unwrap();
 
-    //     assert_eq!(result, expected);
-    // }
+        assert_eq!(result, expected);
+    }
 }
