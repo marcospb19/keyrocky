@@ -1,35 +1,44 @@
-use futures::SinkExt;
+use async_trait::async_trait;
+use derive_deref::{Deref, DerefMut};
 use serde::Serialize;
 use tokio_tungstenite::connect_async;
-use tungstenite::Message;
 
-use crate::{currencies::CurrencyPair, exchanges::ExchangeStream, Result};
+use crate::{
+    currencies::CurrencyPair,
+    exchanges::{ExchangeStream, WebSocket},
+    Result,
+};
 
 const BITSTAMP_WEBSOCKET_URL: &str = "wss://ws.bitstamp.net";
 
-pub async fn connect_and_subscribe(currency_pair: &CurrencyPair) -> Result<ExchangeStream> {
-    let (mut stream, _) = connect_async(BITSTAMP_WEBSOCKET_URL).await?;
+#[derive(Deref, DerefMut)]
+pub struct BitstampStream(WebSocket);
 
-    let message = SubscribeMessage::new(currency_pair);
-    let message = serde_json::to_string(&message).unwrap();
-    let message = Message::Text(message);
+#[async_trait]
+impl ExchangeStream for BitstampStream {
+    type SubscribeMessage = BitstampSubscribeMessage;
 
-    if let err @ Err(_) = stream.send(message).await {
-        // If possible, try closing the stream before returning error.
-        let _ = stream.close(None);
-        err?;
+    async fn connect(_currency_pair: &CurrencyPair) -> Result<WebSocket> {
+        let (stream, _) = connect_async(BITSTAMP_WEBSOCKET_URL).await?;
+        Ok(stream)
     }
 
-    Ok(stream)
+    async fn subscribe_message(currency_pair: &CurrencyPair) -> Self::SubscribeMessage {
+        BitstampSubscribeMessage::new(currency_pair)
+    }
+
+    async fn finish_build(websocket: WebSocket) -> Result<Self> {
+        Ok(Self(websocket))
+    }
 }
 
 #[derive(Serialize)]
-struct SubscribeMessage {
+pub struct BitstampSubscribeMessage {
     event: String,
     data: ChannelInformation,
 }
 
-impl SubscribeMessage {
+impl BitstampSubscribeMessage {
     pub fn new(currency_pair: &CurrencyPair) -> Self {
         Self {
             event: "bts:subscribe".into(),
@@ -39,7 +48,7 @@ impl SubscribeMessage {
 }
 
 #[derive(Serialize)]
-struct ChannelInformation {
+pub struct ChannelInformation {
     channel: String,
 }
 
@@ -61,7 +70,7 @@ mod tests {
     #[test]
     fn test_bitstamp_serializing_subscribe_message() {
         let currency_pair: CurrencyPair = "ETHBTC".parse().unwrap();
-        let message = SubscribeMessage::new(&currency_pair);
+        let message = BitstampSubscribeMessage::new(&currency_pair);
 
         // Example from https://www.bitstamp.net/websocket/v2/
         let expected = json!({

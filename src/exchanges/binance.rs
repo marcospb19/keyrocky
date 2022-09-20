@@ -1,38 +1,47 @@
-use futures::SinkExt;
+use async_trait::async_trait;
+use derive_deref::{Deref, DerefMut};
 use serde::Serialize;
 use tokio_tungstenite::connect_async;
-use tungstenite::Message;
 
-use crate::{currencies::CurrencyPair, exchanges::ExchangeStream, Result};
+use crate::{
+    currencies::CurrencyPair,
+    exchanges::{ExchangeStream, WebSocket},
+    Result,
+};
 
 const BINANCE_WEBSOCKET_BASE_URL: &str = "wss://stream.binance.com:9443/ws";
 
-pub async fn connect_and_subscribe(currency_pair: &CurrencyPair) -> Result<ExchangeStream> {
-    let suffix = currency_pair.as_str();
-    let url = format!("{BINANCE_WEBSOCKET_BASE_URL}/{suffix}");
-    let (mut stream, _) = connect_async(url).await?;
+#[derive(Deref, DerefMut)]
+pub struct BinanceStream(WebSocket);
 
-    let message = SubscribeMessage::new(currency_pair);
-    let message = serde_json::to_string(&message).unwrap();
-    let message = Message::Text(message);
+#[async_trait]
+impl ExchangeStream for BinanceStream {
+    type SubscribeMessage = BinanceSubscribeMessage;
 
-    if let err @ Err(_) = stream.send(message).await {
-        // If possible, try closing the stream before returning error.
-        let _ = stream.close(None);
-        err?;
+    async fn connect(currency_pair: &CurrencyPair) -> Result<WebSocket> {
+        let suffix = currency_pair.as_str();
+        let url = format!("{BINANCE_WEBSOCKET_BASE_URL}/{suffix}");
+        let (stream, _) = connect_async(url).await?;
+        Ok(stream)
     }
 
-    Ok(stream)
+    async fn subscribe_message(currency_pair: &CurrencyPair) -> Self::SubscribeMessage {
+        BinanceSubscribeMessage::new(currency_pair)
+    }
+
+    async fn finish_build(websocket: WebSocket) -> Result<Self> {
+        Ok(Self(websocket))
+    }
 }
 
 #[derive(Serialize)]
-struct SubscribeMessage {
+pub struct BinanceSubscribeMessage {
     method: String,
     params: Vec<String>,
     id: usize,
 }
 
-impl SubscribeMessage {
+impl BinanceSubscribeMessage {
     pub fn new(currency_pair: &CurrencyPair) -> Self {
         let symbol = currency_pair.as_str().to_lowercase();
         Self {
@@ -52,7 +61,7 @@ mod tests {
     #[test]
     fn test_binance_serializing_subscribe_message() {
         let currency_pair: CurrencyPair = "ETHBTC".parse().unwrap();
-        let message = SubscribeMessage::new(&currency_pair);
+        let message = BinanceSubscribeMessage::new(&currency_pair);
 
         let expected = json!({
             "method": "SUBSCRIBE",
