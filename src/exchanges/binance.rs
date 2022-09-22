@@ -1,37 +1,103 @@
-use async_trait::async_trait;
-use derive_deref::{Deref, DerefMut};
-use serde::Serialize;
+use std::{
+    pin::Pin,
+    str::FromStr,
+    task::{ready, Context, Poll},
+};
+
+use bigdecimal::BigDecimal;
+use futures::{SinkExt, Stream, StreamExt};
+use serde::{Deserialize, Serialize};
 use tokio_tungstenite::connect_async;
+use tungstenite::Message;
 
 use crate::{
     currencies::CurrencyPair,
-    exchanges::{ExchangeStream, WebSocket},
-    Result,
+    exchanges::{Order, OrderBook, WebSocket},
+    Error, Result,
 };
 
 const BINANCE_WEBSOCKET_BASE_URL: &str = "wss://stream.binance.com:9443/ws";
 
-#[derive(Deref, DerefMut)]
 pub struct BinanceStream(WebSocket);
 
-#[async_trait]
-impl ExchangeStream for BinanceStream {
-    type SubscribeMessage = BinanceSubscribeMessage;
-
-    async fn connect(currency_pair: &CurrencyPair) -> Result<WebSocket> {
+impl BinanceStream {
+    pub async fn connect_and_subscribe(currency_pair: &CurrencyPair) -> Result<Self> {
         let suffix = currency_pair.as_str();
         let url = format!("{BINANCE_WEBSOCKET_BASE_URL}/{suffix}");
-        let (stream, _) = connect_async(url).await?;
-        Ok(stream)
-    }
+        let (mut websocket, _) = connect_async(url).await?;
 
-    async fn subscribe_message(currency_pair: &CurrencyPair) -> Self::SubscribeMessage {
-        BinanceSubscribeMessage::new(currency_pair)
-    }
+        let message = BinanceSubscribeMessage::new(currency_pair);
+        let message = serde_json::to_string(&message).unwrap();
+        let message = Message::Text(message);
 
-    async fn finish_build(websocket: WebSocket) -> Result<Self> {
+        if let err @ Err(_) = websocket.send(message).await {
+            // If possible, try closing the websocket before returning error.
+            let _ = websocket.close(Default::default());
+            err?;
+        }
+
+        // Skip the subscription response.
+        if let Some(err @ Err(_)) = websocket.next().await {
+            err?;
+        }
+
         Ok(Self(websocket))
     }
+
+    fn try_message_to_order_book(message: Message) -> Result<OrderBook> {
+        let message_text = message.into_text()?;
+        let BinanceRawOrderBook { mut bids, mut asks } =
+            serde_json::from_str(&message_text).unwrap();
+
+        if asks.len() < 10 {
+            return Err(Error::NotEnoughOrders("Binance".into(), "bids".into()));
+        }
+
+        if asks.len() < 10 {
+            return Err(Error::NotEnoughOrders("Binance".into(), "asks".into()));
+        }
+
+        asks.resize_with(10, || unreachable!());
+        bids.resize_with(10, || unreachable!());
+
+        let array_into_order = |array: RawOrder| -> Result<Order, <BigDecimal as FromStr>::Err> {
+            let [price, quantity] = array;
+
+            let price = price.parse()?;
+            let quantity = quantity.parse()?;
+
+            Ok(Order { price, quantity })
+        };
+
+        let bids = bids
+            .into_iter()
+            .map(array_into_order)
+            .collect::<Result<_, _>>()?;
+
+        let asks = asks
+            .into_iter()
+            .map(array_into_order)
+            .collect::<Result<_, _>>()?;
+
+        Ok(OrderBook::new(bids, asks, "Binance"))
+    }
+}
+
+impl Stream for BinanceStream {
+    type Item = Result<OrderBook>;
+
+    fn poll_next(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let message = ready!(Pin::new(&mut self.0).poll_next(context)?);
+        message.map(Self::try_message_to_order_book).into()
+    }
+}
+
+type RawOrder = [String; 2];
+
+#[derive(Deserialize)]
+struct BinanceRawOrderBook {
+    bids: Vec<RawOrder>,
+    asks: Vec<RawOrder>,
 }
 
 #[derive(Serialize)]
@@ -57,6 +123,56 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    #[test]
+    fn test_binance_deserializing_order_book() {
+        let raw_json = include_str!("../../test_data/binance_order_book_update_message.json");
+
+        let convert_matrix_to_order_list = |matrix: &[[&str; 2]]| {
+            matrix
+                .into_iter()
+                .map(|[price, quantity]| {
+                    let price = price.parse().unwrap();
+                    let quantity = quantity.parse().unwrap();
+                    Order { price, quantity }
+                })
+                .collect::<Vec<Order>>()
+        };
+
+        let bids = [
+            ["1336.28000000", "0.40950000"],
+            ["1336.27000000", "0.35500000"],
+            ["1336.22000000", "0.02150000"],
+            ["1336.20000000", "0.35500000"],
+            ["1336.12000000", "0.35500000"],
+            ["1336.06000000", "0.35500000"],
+            ["1335.77000000", "0.35500000"],
+            ["1335.63000000", "0.49390000"],
+            ["1335.62000000", "0.75330000"],
+            ["1335.59000000", "0.62450000"],
+        ];
+        let asks = [
+            ["1336.39000000", "0.35500000"],
+            ["1336.41000000", "0.02150000"],
+            ["1336.42000000", "0.38900000"],
+            ["1336.44000000", "0.35500000"],
+            ["1336.46000000", "0.35500000"],
+            ["1336.60000000", "0.35500000"],
+            ["1336.74000000", "0.15180000"],
+            ["1336.75000000", "0.37730000"],
+            ["1336.83000000", "1.00000000"],
+            ["1336.92000000", "0.35500000"],
+        ];
+
+        let bids = convert_matrix_to_order_list(&bids);
+        let asks = convert_matrix_to_order_list(&asks);
+
+        let expected = OrderBook::new(bids, asks, "Binance");
+
+        let result = BinanceStream::try_message_to_order_book(raw_json.into()).unwrap();
+
+        assert_eq!(result, expected);
+    }
 
     #[test]
     fn test_binance_serializing_subscribe_message() {

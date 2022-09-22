@@ -6,8 +6,10 @@ mod currencies;
 mod error;
 mod exchanges;
 
-use exchanges::{BinanceStream, BitstampStream, ExchangeStream};
-use futures::stream::StreamExt;
+use exchanges::{BinanceStream, BitstampStream};
+use futures::{Stream, StreamExt};
+
+use crate::exchanges::OrderBook;
 
 #[tokio::main]
 async fn main() {
@@ -17,32 +19,29 @@ async fn main() {
     });
 }
 
+#[allow(unused)]
 async fn run() -> Result<()> {
     let (currency_pair, _port) = cli::parse_arguments()?;
 
-    let mut bitstamp_stream = BitstampStream::initialize(&currency_pair).await?;
-    let mut binance_stream = BinanceStream::initialize(&currency_pair).await?;
+    let mut bitstamp_stream = BitstampStream::connect_and_subscribe(&currency_pair).await?;
+    let mut binance_stream = BinanceStream::connect_and_subscribe(&currency_pair).await?;
 
-    let bitstamp_log_stream = async {
-        while let Some(message) = bitstamp_stream.next().await {
-            debug_message("bitstamp", message.unwrap());
-        }
-    };
-    let binance_log_stream = async {
-        while let Some(message) = binance_stream.next().await {
-            debug_message("binance", message.unwrap());
-        }
-    };
+    let bitstamp_order_books = log_order_books(bitstamp_stream);
+    let binance_order_books = log_order_books(binance_stream);
 
-    futures::join!(bitstamp_log_stream, binance_log_stream);
+    futures::try_join!(bitstamp_order_books, binance_order_books);
 
     Ok(())
 }
 
-fn debug_message(from: &str, message: tungstenite::Message) {
-    let json_raw = message.into_text().unwrap();
-    let json_value: serde_json::Value = serde_json::from_str(&json_raw).unwrap();
-    let json_formatted = serde_json::to_string_pretty(&json_value).unwrap();
+async fn log_order_books<S>(mut stream: S) -> Result<()>
+where
+    S: Stream<Item = Result<OrderBook>> + Unpin,
+{
+    while let Some(order_book) = stream.next().await {
+        let order_book = order_book?;
+        dbg!(order_book);
+    }
 
-    println!("{from}: {json_formatted}");
+    Ok(())
 }

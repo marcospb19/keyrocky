@@ -4,9 +4,8 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-async-trait = "0.1.57"
+bigdecimal = { version = "0.3.0", features = ["serde"] }
 clap = { version = "3.2.22", features = ["wrap_help", "derive"] }
-derive_deref = "1.1.1"
 futures = "0.3.24"
 serde = { version = "1.0.144", features = ["derive"] }
 serde_json = "1.0.85"
