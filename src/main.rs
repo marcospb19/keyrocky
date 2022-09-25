@@ -6,8 +6,11 @@ mod currencies;
 mod error;
 mod exchanges;
 
+use std::collections::HashMap;
+
 use exchanges::{BinanceStream, BitstampStream};
-use futures::{Stream, StreamExt};
+use futures::{future, stream_select, Stream, StreamExt};
+use itertools::Itertools;
 
 use crate::exchanges::OrderBook;
 
@@ -19,28 +22,78 @@ async fn main() {
     });
 }
 
-#[allow(unused)]
 async fn run() -> Result<()> {
     let (currency_pair, _port) = cli::parse_arguments()?;
 
-    let mut bitstamp_stream = BitstampStream::connect_and_subscribe(&currency_pair).await?;
-    let mut binance_stream = BinanceStream::connect_and_subscribe(&currency_pair).await?;
+    let binance_stream = BinanceStream::connect_and_subscribe(&currency_pair).await?;
+    let bitstamp_stream = BitstampStream::connect_and_subscribe(&currency_pair).await?;
 
-    let bitstamp_order_books = log_order_books(bitstamp_stream);
-    let binance_order_books = log_order_books(binance_stream);
+    let stream = combine_streams(binance_stream, bitstamp_stream).await?;
 
-    futures::try_join!(bitstamp_order_books, binance_order_books);
-
-    Ok(())
+    debug_stream(stream).await
 }
 
-async fn log_order_books<S>(mut stream: S) -> Result<()>
-where
-    S: Stream<Item = Result<OrderBook>> + Unpin,
-{
+async fn combine_streams(
+    binance_stream: BinanceStream,
+    bitstamp_stream: BitstampStream,
+) -> Result<impl Stream<Item = Result<OrderBook>>> {
+    // This macro combines N streams into one that polls from all of them
+    let stream = stream_select!(binance_stream, bitstamp_stream);
+    let stream = stream.scan(
+        HashMap::<String, OrderBook>::new(),
+        |cached_data, order_book| {
+            let order_book = match order_book {
+                Ok(order_book) => order_book,
+                Err(err) => return future::ready(Some(Err(err))),
+            };
+
+            let cache_key = order_book.asks[0].exchange.into();
+            cached_data.insert(cache_key, order_book);
+
+            let ordered_asks = cached_data
+                .values()
+                .flat_map(|order_book| order_book.asks.iter())
+                .sorted_by(|left, right| left.price.cmp(&right.price))
+                .take(10);
+
+            let ordered_bids = cached_data
+                .values()
+                .flat_map(|order_book| order_book.bids.iter())
+                .sorted_by(|left, right| left.price.cmp(&right.price).reverse())
+                .take(10);
+
+            let combined_order_book = OrderBook {
+                asks: ordered_asks.cloned().collect(),
+                bids: ordered_bids.cloned().collect(),
+            };
+
+            future::ready(Some(Ok(combined_order_book)))
+        },
+    );
+
+    Ok(stream)
+}
+
+async fn debug_stream(stream: impl Stream<Item = Result<OrderBook>>) -> Result<()> {
+    let mut stream = Box::pin(stream);
+
     while let Some(order_book) = stream.next().await {
         let order_book = order_book?;
-        dbg!(order_book);
+
+        let binance = order_book
+            .asks
+            .iter()
+            .chain(&order_book.bids)
+            .filter(|order| order.exchange == "Binance")
+            .count();
+        let bitstamp = order_book
+            .asks
+            .iter()
+            .chain(&order_book.bids)
+            .filter(|order| order.exchange == "Bitstamp")
+            .count();
+
+        println!("- Binance: {binance:2} - Bitstamp: {bitstamp:2}");
     }
 
     Ok(())

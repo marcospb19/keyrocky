@@ -17,6 +17,7 @@ use crate::{
 };
 
 const BINANCE_WEBSOCKET_BASE_URL: &str = "wss://stream.binance.com:9443/ws";
+const EXCHANGE_NAME: &str = "Binance";
 
 pub struct BinanceStream(WebSocket);
 
@@ -50,11 +51,11 @@ impl BinanceStream {
             serde_json::from_str(&message_text).unwrap();
 
         if asks.len() < 10 {
-            return Err(Error::NotEnoughOrders("Binance".into(), "bids".into()));
+            return Err(Error::NotEnoughOrders(EXCHANGE_NAME.into(), "bids".into()));
         }
 
         if asks.len() < 10 {
-            return Err(Error::NotEnoughOrders("Binance".into(), "asks".into()));
+            return Err(Error::NotEnoughOrders(EXCHANGE_NAME.into(), "asks".into()));
         }
 
         asks.resize_with(10, || unreachable!());
@@ -66,7 +67,11 @@ impl BinanceStream {
             let price = price.parse()?;
             let quantity = quantity.parse()?;
 
-            Ok(Order { price, quantity })
+            Ok(Order {
+                price,
+                quantity,
+                exchange: EXCHANGE_NAME,
+            })
         };
 
         let bids = bids
@@ -79,7 +84,7 @@ impl BinanceStream {
             .map(array_into_order)
             .collect::<Result<_, _>>()?;
 
-        Ok(OrderBook::new(bids, asks, "Binance"))
+        Ok(OrderBook::new(bids, asks))
     }
 }
 
@@ -134,7 +139,11 @@ mod tests {
                 .map(|[price, quantity]| {
                     let price = price.parse().unwrap();
                     let quantity = quantity.parse().unwrap();
-                    Order { price, quantity }
+                    Order {
+                        price,
+                        quantity,
+                        exchange: "Binance",
+                    }
                 })
                 .collect::<Vec<Order>>()
         };
@@ -167,7 +176,7 @@ mod tests {
         let bids = convert_matrix_to_order_list(&bids);
         let asks = convert_matrix_to_order_list(&asks);
 
-        let expected = OrderBook::new(bids, asks, "Binance");
+        let expected = OrderBook::new(bids, asks);
 
         let result = BinanceStream::try_message_to_order_book(raw_json.into()).unwrap();
 

@@ -17,6 +17,7 @@ use crate::{
 };
 
 const BITSTAMP_WEBSOCKET_URL: &str = "wss://ws.bitstamp.net";
+const EXCHANGE_NAME: &str = "Bitstamp";
 
 pub struct BitstampStream(WebSocket);
 
@@ -52,11 +53,11 @@ impl BitstampStream {
         } = serde_json::from_str(&message_text).unwrap();
 
         if asks.len() < 10 {
-            return Err(Error::NotEnoughOrders("Bitstamp".into(), "bids".into()));
+            return Err(Error::NotEnoughOrders(EXCHANGE_NAME.into(), "bids".into()));
         }
 
         if asks.len() < 10 {
-            return Err(Error::NotEnoughOrders("Bitstamp".into(), "asks".into()));
+            return Err(Error::NotEnoughOrders(EXCHANGE_NAME.into(), "asks".into()));
         }
 
         asks.resize_with(10, || unreachable!());
@@ -68,7 +69,11 @@ impl BitstampStream {
             let price = price.parse()?;
             let quantity = quantity.parse()?;
 
-            Ok(Order { price, quantity })
+            Ok(Order {
+                price,
+                quantity,
+                exchange: EXCHANGE_NAME,
+            })
         };
 
         let bids = bids
@@ -81,7 +86,7 @@ impl BitstampStream {
             .map(array_into_order)
             .collect::<Result<_, _>>()?;
 
-        Ok(OrderBook::new(bids, asks, "Bitstamp"))
+        Ok(OrderBook::new(bids, asks))
     }
 }
 
@@ -153,7 +158,11 @@ mod tests {
                 .map(|[price, quantity]| {
                     let price = price.parse().unwrap();
                     let quantity = quantity.parse().unwrap();
-                    Order { price, quantity }
+                    Order {
+                        price,
+                        quantity,
+                        exchange: "Bitstamp",
+                    }
                 })
                 .collect::<Vec<Order>>()
         };
@@ -187,7 +196,7 @@ mod tests {
         let bids = convert_matrix_to_order_list(&bids);
         let asks = convert_matrix_to_order_list(&asks);
 
-        let expected = OrderBook::new(bids, asks, "Bitstamp");
+        let expected = OrderBook::new(bids, asks);
 
         let result = BitstampStream::try_message_to_order_book(raw_json.into()).unwrap();
 

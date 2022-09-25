@@ -16,7 +16,7 @@ pub fn parse_arguments() -> Result<(CurrencyPair, u16)> {
     Ok((currency_pair, port))
 }
 
-/// gRPC server that streams book order information for a currency pair.
+/// gRPC server that streams an order book for a currency pair.
 #[derive(Parser, Debug)]
 struct CliArgs {
     /// Currency pair for which the information will be fetched and streamed.

@@ -10,28 +10,23 @@ use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
 type WebSocket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Order {
-    price: BigDecimal,
-    quantity: BigDecimal,
+    pub price: BigDecimal,
+    pub quantity: BigDecimal,
+    pub exchange: &'static str,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OrderBook {
     /// The best ten bids.
-    best_bids: Vec<Order>,
+    pub bids: Vec<Order>,
     /// The best ten asks.
-    best_asks: Vec<Order>,
-    /// Name of the exchange which this book originated from.
-    origin: &'static str,
+    pub asks: Vec<Order>,
 }
 
 impl OrderBook {
-    pub fn new(best_bids: Vec<Order>, best_asks: Vec<Order>, origin: &'static str) -> Self {
-        Self {
-            best_bids,
-            best_asks,
-            origin,
-        }
+    pub fn new(bids: Vec<Order>, asks: Vec<Order>) -> Self {
+        Self { bids, asks }
     }
 }
