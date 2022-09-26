@@ -9,8 +9,9 @@ mod exchanges;
 use std::collections::HashMap;
 
 use exchanges::{BinanceStream, BitstampStream};
-use futures::{future, stream_select, Stream, StreamExt};
+use futures::{future, Stream, StreamExt};
 use itertools::Itertools;
+use merge_streams::MergeStreams;
 
 use crate::exchanges::OrderBook;
 
@@ -34,11 +35,10 @@ async fn run() -> Result<()> {
 }
 
 async fn combine_streams(
-    binance_stream: BinanceStream,
-    bitstamp_stream: BitstampStream,
+    left_stream: impl Stream<Item = Result<OrderBook>>,
+    right_stream: impl Stream<Item = Result<OrderBook>>,
 ) -> Result<impl Stream<Item = Result<OrderBook>>> {
-    // This macro combines N streams into one that polls from all of them
-    let stream = stream_select!(binance_stream, bitstamp_stream);
+    let stream = (left_stream, right_stream).merge();
     let stream = stream.scan(
         HashMap::<String, OrderBook>::new(),
         |cached_data, order_book| {
