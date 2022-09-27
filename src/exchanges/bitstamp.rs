@@ -1,11 +1,7 @@
-use std::{
-    pin::Pin,
-    str::FromStr,
-    task::{ready, Context, Poll},
-};
+use std::str::FromStr;
 
 use bigdecimal::BigDecimal;
-use futures::{SinkExt, Stream, StreamExt};
+use futures::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use tokio_tungstenite::connect_async;
 use tungstenite::Message;
@@ -13,90 +9,73 @@ use tungstenite::Message;
 use crate::{
     currencies::CurrencyPair,
     exchanges::{Order, OrderBook, WebSocket},
-    BinanceStream, Error, Result,
+    Error, Result,
 };
 
 const BITSTAMP_WEBSOCKET_URL: &str = "wss://ws.bitstamp.net";
 const EXCHANGE_NAME: &str = "Bitstamp";
 
-pub struct BitstampStream(WebSocket);
+pub async fn connect_and_subscribe(currency_pair: &CurrencyPair) -> Result<WebSocket> {
+    let (mut websocket, _) = connect_async(BITSTAMP_WEBSOCKET_URL).await?;
 
-impl BinanceStream {}
+    let message = BitstampSubscribeMessage::new(currency_pair);
+    let message = serde_json::to_string(&message).unwrap();
+    let message = Message::Text(message);
 
-impl BitstampStream {
-    pub async fn connect_and_subscribe(currency_pair: &CurrencyPair) -> Result<Self> {
-        let (mut websocket, _) = connect_async(BITSTAMP_WEBSOCKET_URL).await?;
-
-        let message = BitstampSubscribeMessage::new(currency_pair);
-        let message = serde_json::to_string(&message).unwrap();
-        let message = Message::Text(message);
-
-        if let err @ Err(_) = websocket.send(message).await {
-            // If possible, try closing the websocket before returning error.
-            let _ = websocket.close(Default::default());
-            err?;
-        }
-
-        // Skip the subscription response.
-        if let Some(err @ Err(_)) = websocket.next().await {
-            err?;
-        }
-
-        Ok(Self(websocket))
+    if let err @ Err(_) = websocket.send(message).await {
+        // If possible, try closing the websocket before returning error.
+        let _ = websocket.close(Default::default());
+        err?;
     }
 
-    fn try_message_to_order_book(message: Message) -> Result<OrderBook> {
-        let message_text = message.into_text()?;
-
-        let BitstampRawOrderBook {
-            data: BitstampOrderBookData { mut bids, mut asks },
-        } = serde_json::from_str(&message_text).unwrap();
-
-        if asks.len() < 10 {
-            return Err(Error::NotEnoughOrders(EXCHANGE_NAME.into(), "bids".into()));
-        }
-
-        if asks.len() < 10 {
-            return Err(Error::NotEnoughOrders(EXCHANGE_NAME.into(), "asks".into()));
-        }
-
-        asks.resize_with(10, || unreachable!());
-        bids.resize_with(10, || unreachable!());
-
-        let array_into_order = |array: RawOrder| -> Result<Order, <BigDecimal as FromStr>::Err> {
-            let [price, quantity, _identifier] = array;
-
-            let price = price.parse()?;
-            let quantity = quantity.parse()?;
-
-            Ok(Order {
-                price,
-                quantity,
-                exchange: EXCHANGE_NAME,
-            })
-        };
-
-        let bids = bids
-            .into_iter()
-            .map(array_into_order)
-            .collect::<Result<_, _>>()?;
-
-        let asks = asks
-            .into_iter()
-            .map(array_into_order)
-            .collect::<Result<_, _>>()?;
-
-        Ok(OrderBook::new(bids, asks))
+    // Skip the subscription response.
+    if let Some(err @ Err(_)) = websocket.next().await {
+        err?;
     }
+
+    Ok(websocket)
 }
 
-impl Stream for BitstampStream {
-    type Item = Result<OrderBook>;
+pub fn try_message_to_order_book(message: String) -> Result<OrderBook> {
+    let BitstampRawOrderBook {
+        data: BitstampOrderBookData { mut bids, mut asks },
+    } = serde_json::from_str(&message).unwrap();
 
-    fn poll_next(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let message = ready!(Pin::new(&mut self.0).poll_next(context)?);
-        message.map(Self::try_message_to_order_book).into()
+    if asks.len() < 10 {
+        return Err(Error::NotEnoughOrders(EXCHANGE_NAME.into(), "bids".into()));
     }
+
+    if asks.len() < 10 {
+        return Err(Error::NotEnoughOrders(EXCHANGE_NAME.into(), "asks".into()));
+    }
+
+    asks.resize_with(10, || unreachable!());
+    bids.resize_with(10, || unreachable!());
+
+    let array_into_order = |array: RawOrder| -> Result<Order, <BigDecimal as FromStr>::Err> {
+        let [price, quantity, _identifier] = array;
+
+        let price = price.parse()?;
+        let quantity = quantity.parse()?;
+
+        Ok(Order {
+            price,
+            quantity,
+            exchange: EXCHANGE_NAME,
+        })
+    };
+
+    let bids = bids
+        .into_iter()
+        .map(array_into_order)
+        .collect::<Result<_, _>>()?;
+
+    let asks = asks
+        .into_iter()
+        .map(array_into_order)
+        .collect::<Result<_, _>>()?;
+
+    Ok(OrderBook::new(bids, asks))
 }
 
 type RawOrder = [String; 3];
@@ -198,7 +177,7 @@ mod tests {
 
         let expected = OrderBook::new(bids, asks);
 
-        let result = BitstampStream::try_message_to_order_book(raw_json.into()).unwrap();
+        let result = try_message_to_order_book(raw_json.into()).unwrap();
 
         assert_eq!(result, expected);
     }

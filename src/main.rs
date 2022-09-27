@@ -8,10 +8,12 @@ mod exchanges;
 
 use std::collections::HashMap;
 
-use exchanges::{BinanceStream, BitstampStream};
-use futures::{future, Stream, StreamExt};
+use async_stream::*;
+use exchanges::{binance, bitstamp};
+use futures::{future, Sink, SinkExt, Stream, StreamExt};
 use itertools::Itertools;
 use merge_streams::MergeStreams;
+use tungstenite::Message;
 
 use crate::exchanges::OrderBook;
 
@@ -26,20 +28,28 @@ async fn main() {
 async fn run() -> Result<()> {
     let (currency_pair, _port) = cli::parse_arguments()?;
 
-    let binance_stream = BinanceStream::connect_and_subscribe(&currency_pair).await?;
-    let bitstamp_stream = BitstampStream::connect_and_subscribe(&currency_pair).await?;
+    let binance_stream = binance::connect_and_subscribe(&currency_pair)
+        .await
+        .map(answer_websocket_pings)?
+        .map(|message| binance::try_message_to_order_book(message?));
 
-    let stream = combine_streams(binance_stream, bitstamp_stream).await?;
+    let bitstamp_stream = bitstamp::connect_and_subscribe(&currency_pair)
+        .await
+        .map(answer_websocket_pings)?
+        .map(|message| bitstamp::try_message_to_order_book(message?));
 
-    debug_stream(stream).await
+    let stream = combine_streams(binance_stream, bitstamp_stream);
+    debug_stream(stream).await?;
+
+    Ok(())
 }
 
-async fn combine_streams(
+fn combine_streams(
     left_stream: impl Stream<Item = Result<OrderBook>>,
     right_stream: impl Stream<Item = Result<OrderBook>>,
-) -> Result<impl Stream<Item = Result<OrderBook>>> {
+) -> impl Stream<Item = Result<OrderBook>> {
     let stream = (left_stream, right_stream).merge();
-    let stream = stream.scan(
+    stream.scan(
         HashMap::<String, OrderBook>::new(),
         |cached_data, order_book| {
             let order_book = match order_book {
@@ -69,9 +79,27 @@ async fn combine_streams(
 
             future::ready(Some(Ok(combined_order_book)))
         },
-    );
+    )
+}
 
-    Ok(stream)
+fn answer_websocket_pings<W>(websocket: W) -> impl Stream<Item = Result<String>>
+where
+    W: Sink<Message> + Stream<Item = tungstenite::Result<Message>> + Unpin,
+    Error: From<W::Error>,
+{
+    let (mut sink, stream) = websocket.split();
+
+    try_stream! {
+        for await message in stream {
+            let message = message?;
+
+            match message {
+                Message::Text(text) => yield text,
+                Message::Ping(data) => sink.send(Message::Pong(data)).await?,
+                _ => {},
+            }
+        }
+    }
 }
 
 async fn debug_stream(stream: impl Stream<Item = Result<OrderBook>>) -> Result<()> {

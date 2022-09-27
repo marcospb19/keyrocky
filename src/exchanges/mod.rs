@@ -1,6 +1,3 @@
-pub use binance::BinanceStream;
-pub use bitstamp::BitstampStream;
-
 pub mod binance;
 pub mod bitstamp;
 
