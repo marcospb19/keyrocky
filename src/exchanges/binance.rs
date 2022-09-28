@@ -8,7 +8,8 @@ use tungstenite::Message;
 
 use crate::{
     currencies::CurrencyPair,
-    exchanges::{Order, OrderBook, WebSocket},
+    exchanges::WebSocket,
+    order_book::{Level, Summary},
     Error, Result,
 };
 
@@ -38,7 +39,7 @@ pub async fn connect_and_subscribe(currency_pair: &CurrencyPair) -> Result<WebSo
     Ok(websocket)
 }
 
-pub fn try_message_to_order_book(message: String) -> Result<OrderBook> {
+pub fn try_message_to_order_book(message: String) -> Result<Summary> {
     let BinanceRawOrderBook { mut bids, mut asks } = serde_json::from_str(&message).unwrap();
 
     if asks.len() < 10 {
@@ -52,16 +53,16 @@ pub fn try_message_to_order_book(message: String) -> Result<OrderBook> {
     asks.resize_with(10, || unreachable!());
     bids.resize_with(10, || unreachable!());
 
-    let array_into_order = |array: RawOrder| -> Result<Order, <BigDecimal as FromStr>::Err> {
-        let [price, quantity] = array;
+    let array_into_order = |array: RawOrder| -> Result<Level, <BigDecimal as FromStr>::Err> {
+        let [price, amount] = array;
 
         let price = price.parse()?;
-        let quantity = quantity.parse()?;
+        let amount = amount.parse()?;
 
-        Ok(Order {
+        Ok(Level {
             price,
-            quantity,
-            exchange: EXCHANGE_NAME,
+            amount,
+            exchange: EXCHANGE_NAME.to_string(),
         })
     };
 
@@ -75,7 +76,7 @@ pub fn try_message_to_order_book(message: String) -> Result<OrderBook> {
         .map(array_into_order)
         .collect::<Result<_, _>>()?;
 
-    Ok(OrderBook::new(bids, asks))
+    Ok(Summary::new(bids, asks))
 }
 
 type RawOrder = [String; 2];
@@ -117,16 +118,16 @@ mod tests {
         let convert_matrix_to_order_list = |matrix: &[[&str; 2]]| {
             matrix
                 .into_iter()
-                .map(|[price, quantity]| {
+                .map(|[price, amount]| {
                     let price = price.parse().unwrap();
-                    let quantity = quantity.parse().unwrap();
-                    Order {
+                    let amount = amount.parse().unwrap();
+                    Level {
                         price,
-                        quantity,
-                        exchange: "Binance",
+                        amount,
+                        exchange: "Binance".to_string(),
                     }
                 })
-                .collect::<Vec<Order>>()
+                .collect::<Vec<Level>>()
         };
 
         let bids = [
@@ -157,7 +158,7 @@ mod tests {
         let bids = convert_matrix_to_order_list(&bids);
         let asks = convert_matrix_to_order_list(&asks);
 
-        let expected = OrderBook::new(bids, asks);
+        let expected = Summary::new(bids, asks);
 
         let result = try_message_to_order_book(raw_json.into()).unwrap();
 

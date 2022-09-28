@@ -10,9 +10,15 @@ clap = { version = "3.2.22", features = ["wrap_help", "derive"] }
 futures = "0.3.24"
 itertools = "0.10.5"
 merge-streams = "0.1.2"
+prost = "0.11.0"
 serde = { version = "1.0.144", features = ["derive"] }
 serde_json = "1.0.85"
 thiserror = "1.0.35"
 tokio = { version = "1.21.1", features = ["rt-multi-thread", "macros"] }
+tokio-stream = { version = "0.1.10", features = ["sync"] }
 tokio-tungstenite = { version = "0.17.2", features = ["native-tls"] }
+tonic = "0.8.1"
 tungstenite = "0.17.3"
+
+[build-dependencies]
+tonic-build = "0.8.0"
