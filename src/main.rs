@@ -7,18 +7,19 @@ mod error;
 mod exchanges;
 mod order_book;
 mod server;
+mod websocket;
 
 use std::collections::HashMap;
 
-use async_stream::*;
-use exchanges::{binance, bitstamp};
-use futures::{future, Sink, SinkExt, Stream, StreamExt};
+use exchanges::{BinanceExchange, BitstampExchange};
+use futures::{future, Stream, StreamExt};
 use itertools::Itertools;
 use merge_streams::MergeStreams;
 use tokio::sync::broadcast;
-use tungstenite::Message;
 
-use crate::{currencies::CurrencyPair, order_book::Summary};
+use crate::{currencies::CurrencyPair, exchanges::ConnectToOrderBook, order_book::Summary};
+
+const BROADCAST_QUEUE_CAPACITY: usize = 100;
 
 #[tokio::main]
 async fn main() {
@@ -31,49 +32,52 @@ async fn main() {
 async fn run() -> Result<()> {
     let (currency_pair, port) = cli::parse_arguments()?;
 
-    let mut stream = build_aggregated_stream(&currency_pair).await?;
+    let mut stream = build_aggregated_book_order(&currency_pair).await?;
 
-    let (tx, _rx) = broadcast::channel::<Result<Summary, String>>(100);
+    let (channel_subscriber, _) = broadcast::channel(BROADCAST_QUEUE_CAPACITY);
+    let publisher = channel_subscriber.clone();
 
-    let orderbook_broadcast = tx.clone();
+    // Consume the stream and transmit all summaries to the publisher
     tokio::spawn(async move {
-        while let Some(updated_order_book) = stream.next().await {
-            match updated_order_book {
-                Ok(order_book) => {
-                    orderbook_broadcast.send(Ok(order_book)).unwrap();
-                }
-                Err(error) => {
-                    let error_message = format!("{error}");
-                    orderbook_broadcast.send(Err(error_message)).unwrap();
-                }
-            }
+        let stringify_error = |err| format!("{err}");
+
+        while let Some(updated_summary) = stream.next().await {
+            let summary = updated_summary.map_err(stringify_error);
+
+            // Ignore send errors, nobody might be listening to this publisher now,
+            // however, new listeners are spawned on-demand when requests are received.
+            let _ = publisher.send(summary);
         }
+
         Ok(()) as Result<()>
     });
 
-    server::run_server(tx, port)
+    server::run_server(channel_subscriber, port)
         .await
         .expect("cannot run server");
 
     Ok(())
 }
 
-pub async fn build_aggregated_stream(
+/// Connects to exchanges and returns the aggregated book order stream.
+async fn build_aggregated_book_order(
     currency_pair: &CurrencyPair,
 ) -> Result<impl Stream<Item = Result<Summary>>> {
-    let binance_stream = binance::connect_and_subscribe(currency_pair)
-        .await
-        .map(answer_websocket_pings_adapter)?
-        .map(|message| binance::try_message_to_order_book(message?));
+    // Connect to exchange websockets, answer pings and parse summaries.
+    let binance = BinanceExchange::connect_to_order_book(currency_pair).await?;
+    let binance = websocket::answer_websocket_pings_adapter(binance);
+    let binance = binance.map(|message| BinanceExchange::try_parse_summary(message?));
 
-    let bitstamp_stream = bitstamp::connect_and_subscribe(currency_pair)
-        .await
-        .map(answer_websocket_pings_adapter)?
-        .map(|message| bitstamp::try_message_to_order_book(message?));
+    let bitstamp = BitstampExchange::connect_to_order_book(currency_pair).await?;
+    let bitstamp = websocket::answer_websocket_pings_adapter(bitstamp);
+    let bitstamp = bitstamp.map(|message| BitstampExchange::try_parse_summary(message?));
 
-    Ok(combine_streams(binance_stream, bitstamp_stream))
+    Ok(combine_streams(binance, bitstamp))
 }
 
+// Combine streams into a new stream, summaries are cached by
+// the (hopefully) unique exchange names, and overwritten every
+// time the same exchange updates it's latest summary.
 fn combine_streams(
     left_stream: impl Stream<Item = Result<Summary>>,
     right_stream: impl Stream<Item = Result<Summary>>,
@@ -81,53 +85,31 @@ fn combine_streams(
     let stream = (left_stream, right_stream).merge();
     stream.scan(
         HashMap::<String, Summary>::new(),
-        |cached_data, order_book| {
-            let order_book = match order_book {
-                Ok(order_book) => order_book,
+        |cached_summaries, next_summary| {
+            let next_summary = match next_summary {
+                Ok(next_summary) => next_summary,
                 Err(err) => return future::ready(Some(Err(err))),
             };
 
-            let cache_key = order_book.asks[0].exchange.clone();
-            cached_data.insert(cache_key, order_book);
+            let cache_key = next_summary.asks[0].exchange.clone();
+            cached_summaries.insert(cache_key, next_summary);
 
-            let ordered_bids = cached_data
+            let ordered_bids = cached_summaries
                 .values()
-                .flat_map(|order_book| order_book.bids.iter())
-                .sorted_by(|left, right| left.price.partial_cmp(&right.price).unwrap().reverse())
-                .take(10);
+                .flat_map(|summary| summary.bids.iter())
+                .sorted_by(|left, right| left.price.partial_cmp(&right.price).unwrap().reverse());
 
-            let ordered_asks = cached_data
+            let ordered_asks = cached_summaries
                 .values()
-                .flat_map(|order_book| order_book.asks.iter())
-                .sorted_by(|left, right| left.price.partial_cmp(&right.price).unwrap())
-                .take(10);
+                .flat_map(|summary| summary.asks.iter())
+                .sorted_by(|left, right| left.price.partial_cmp(&right.price).unwrap());
 
             let combined_order_book = Summary::new(
-                ordered_bids.cloned().collect(),
-                ordered_asks.cloned().collect(),
+                ordered_bids.take(10).cloned().collect(),
+                ordered_asks.take(10).cloned().collect(),
             );
 
             future::ready(Some(Ok(combined_order_book)))
         },
     )
-}
-
-fn answer_websocket_pings_adapter<W>(websocket: W) -> impl Stream<Item = Result<String>>
-where
-    W: Sink<Message> + Stream<Item = tungstenite::Result<Message>> + Unpin,
-    Error: From<W::Error>,
-{
-    let (mut sink, stream) = websocket.split();
-
-    try_stream! {
-        for await message in stream {
-            let message = message?;
-
-            match message {
-                Message::Text(text) => yield text,
-                Message::Ping(data) => sink.send(Message::Pong(data)).await?,
-                _ => {},
-            }
-        }
-    }
 }

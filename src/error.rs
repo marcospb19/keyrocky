@@ -1,5 +1,3 @@
-use bigdecimal::ParseBigDecimalError;
-
 pub type Result<T, E = self::Error> = std::result::Result<T, E>;
 
 #[derive(thiserror::Error, Debug)]
@@ -10,6 +8,6 @@ pub enum Error {
     NotEnoughOrders(String, String),
     #[error("WebSocket error: {0}")]
     TungsteniteError(#[from] tungstenite::error::Error),
-    #[error("Failed to parse integer: {0}")]
-    BigdecimalError(#[from] ParseBigDecimalError),
+    #[error("Failed to parse float: {0}")]
+    ParseFloatError(#[from] std::num::ParseFloatError),
 }

@@ -46,19 +46,17 @@ impl OrderbookAggregator for OrderbookAggregatorChannel {
         let stream = BroadcastStream::new(receiver);
 
         let stream = async_stream::stream! {
-            for await message in stream {
-                // Ignore lagged packets
-                if let Ok(message) = message {
+            for await summary in stream {
+                // Ignore lagged/obsolete summaries (Err)
+                if let Ok(summary) = summary {
+                    // Map error to the gRPC error type
+                    let summary = summary.map_err(Status::internal);
                     // Stream it
-                    yield translate_channel_message(message);
+                    yield summary;
                 }
             }
         };
 
         Ok(Response::new(Box::pin(stream)))
     }
-}
-
-fn translate_channel_message(result: Result<Summary, String>) -> TonicResult<Summary> {
-    result.map_err(|text| Status::internal(text))
 }

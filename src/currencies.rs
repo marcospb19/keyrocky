@@ -1,18 +1,14 @@
-use std::{fmt, str::FromStr};
+use std::str::FromStr;
 
 use crate::Error;
 
+/// A curency pair like "ETHBTC".
 pub struct CurrencyPair(String);
 
 impl CurrencyPair {
+    /// Extracts the inner string slice.
     pub fn as_str(&self) -> &str {
         &self.0
-    }
-}
-
-impl fmt::Display for CurrencyPair {
-    fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-        self.as_str().fmt(formatter)
     }
 }
 
@@ -34,7 +30,7 @@ impl FromStr for CurrencyPair {
     }
 }
 
-/// All pairs that are supported by Binance and Bitstamp.
+/// All currency pairs supported by Binance and Bitstamp.
 pub const SUPPORTED_CURRENCY_PAIRS: [&str; 49] = [
     "AAVEBTC", "ADABTC", "ADAEUR", "ALGOBTC", "APEEUR", "AUDIOBTC", "AVAXEUR", "BCHBTC", "BCHEUR",
     "BTCEUR", "BTCGBP", "BTCPAX", "BTCUSDC", "BTCUSDT", "CHZEUR", "DOTEUR", "ENJEUR", "ETHBTC",

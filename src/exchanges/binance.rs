@@ -1,14 +1,10 @@
 use std::str::FromStr;
 
-use bigdecimal::BigDecimal;
-use futures::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
-use tokio_tungstenite::connect_async;
-use tungstenite::Message;
 
 use crate::{
     currencies::CurrencyPair,
-    exchanges::WebSocket,
+    exchanges::ConnectToOrderBook,
     order_book::{Level, Summary},
     Error, Result,
 };
@@ -16,75 +12,66 @@ use crate::{
 const BINANCE_WEBSOCKET_BASE_URL: &str = "wss://stream.binance.com:9443/ws";
 const EXCHANGE_NAME: &str = "Binance";
 
-pub async fn connect_and_subscribe(currency_pair: &CurrencyPair) -> Result<WebSocket> {
-    let suffix = currency_pair.as_str();
-    let url = format!("{BINANCE_WEBSOCKET_BASE_URL}/{suffix}");
-    let (mut websocket, _) = connect_async(url).await?;
+pub struct BinanceExchange;
 
-    let message = BinanceSubscribeMessage::new(currency_pair);
-    let message = serde_json::to_string(&message).unwrap();
-    let message = Message::Text(message);
+impl ConnectToOrderBook for BinanceExchange {
+    type SubscribeMessage = BinanceSubscribeMessage;
 
-    if let err @ Err(_) = websocket.send(message).await {
-        // If possible, try closing the websocket before returning error.
-        let _ = websocket.close(Default::default());
-        err?;
+    fn connect_url(currency_pair: &CurrencyPair) -> String {
+        let suffix = currency_pair.as_str();
+        format!("{BINANCE_WEBSOCKET_BASE_URL}/{suffix}")
     }
 
-    // Skip the subscription response.
-    if let Some(err @ Err(_)) = websocket.next().await {
-        err?;
+    fn subscribe_message(currency_pair: &CurrencyPair) -> Self::SubscribeMessage {
+        BinanceSubscribeMessage::new(currency_pair)
     }
-
-    Ok(websocket)
 }
 
-pub fn try_message_to_order_book(message: String) -> Result<Summary> {
-    let BinanceRawOrderBook { mut bids, mut asks } = serde_json::from_str(&message).unwrap();
+impl BinanceExchange {
+    pub fn try_parse_summary(message: String) -> Result<Summary> {
+        let BinanceRawLevelBook { mut bids, mut asks } = serde_json::from_str(&message).unwrap();
 
-    if asks.len() < 10 {
-        return Err(Error::NotEnoughOrders(EXCHANGE_NAME.into(), "bids".into()));
+        if asks.len() < 10 {
+            return Err(Error::NotEnoughOrders(EXCHANGE_NAME.into(), "bids".into()));
+        }
+
+        if asks.len() < 10 {
+            return Err(Error::NotEnoughOrders(EXCHANGE_NAME.into(), "asks".into()));
+        }
+
+        asks.resize_with(10, || unreachable!());
+        bids.resize_with(10, || unreachable!());
+
+        let array_into_level = |array: RawLevel| -> Result<Level, <f64 as FromStr>::Err> {
+            let [price, amount] = array;
+
+            Ok(Level {
+                price: price.parse()?,
+                amount: amount.parse()?,
+                exchange: EXCHANGE_NAME.to_string(),
+            })
+        };
+
+        let bids = bids
+            .into_iter()
+            .map(array_into_level)
+            .collect::<Result<_, _>>()?;
+
+        let asks = asks
+            .into_iter()
+            .map(array_into_level)
+            .collect::<Result<_, _>>()?;
+
+        Ok(Summary::new(bids, asks))
     }
-
-    if asks.len() < 10 {
-        return Err(Error::NotEnoughOrders(EXCHANGE_NAME.into(), "asks".into()));
-    }
-
-    asks.resize_with(10, || unreachable!());
-    bids.resize_with(10, || unreachable!());
-
-    let array_into_order = |array: RawOrder| -> Result<Level, <BigDecimal as FromStr>::Err> {
-        let [price, amount] = array;
-
-        let price = price.parse()?;
-        let amount = amount.parse()?;
-
-        Ok(Level {
-            price,
-            amount,
-            exchange: EXCHANGE_NAME.to_string(),
-        })
-    };
-
-    let bids = bids
-        .into_iter()
-        .map(array_into_order)
-        .collect::<Result<_, _>>()?;
-
-    let asks = asks
-        .into_iter()
-        .map(array_into_order)
-        .collect::<Result<_, _>>()?;
-
-    Ok(Summary::new(bids, asks))
 }
 
-type RawOrder = [String; 2];
+type RawLevel = [String; 2];
 
 #[derive(Deserialize)]
-struct BinanceRawOrderBook {
-    bids: Vec<RawOrder>,
-    asks: Vec<RawOrder>,
+struct BinanceRawLevelBook {
+    bids: Vec<RawLevel>,
+    asks: Vec<RawLevel>,
 }
 
 #[derive(Serialize)]
@@ -160,7 +147,7 @@ mod tests {
 
         let expected = Summary::new(bids, asks);
 
-        let result = try_message_to_order_book(raw_json.into()).unwrap();
+        let result = BinanceExchange::try_parse_summary(raw_json.into()).unwrap();
 
         assert_eq!(result, expected);
     }

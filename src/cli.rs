@@ -19,7 +19,7 @@ pub fn parse_arguments() -> Result<(CurrencyPair, u16)> {
 /// gRPC server that streams an order book for a currency pair.
 #[derive(Parser, Debug)]
 struct CliArgs {
-    /// Currency pair for which the information will be fetched and streamed.
+    /// Currency pair for the order book.
     #[clap(
         default_value = "ETHBTC",
         possible_values = SUPPORTED_CURRENCY_PAIRS
