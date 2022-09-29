@@ -47,7 +47,7 @@ impl OrderbookAggregator for OrderbookAggregatorChannel {
 
         let stream = async_stream::stream! {
             for await summary in stream {
-                // Ignore lagged/obsolete summaries (Err)
+                // Ignore obsolete summaries (Err(_))
                 if let Ok(summary) = summary {
                     // Map error to the gRPC error type
                     let summary = summary.map_err(Status::internal);
