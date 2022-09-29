@@ -36,3 +36,11 @@ cargo install --path keyrocky
 | `SHIBEUR`  | `SOLEUR`  | `SXPEUR`   | `UNIBTC`  | `UNIEUR`  |
 | `USDCUSDT` | `WBTCBTC` | `XLMBTC`   | `XLMEUR`  | `XRPBTC`  |
 | `XRPEUR`   | `XRPGBP`  | `XRPUSDT`  | `YFIEUR`  | _ |
+
+
+## Missing features
+
+- Retry to reconnect to websockets that have failed.
+- Ignore websockets message errors instead of aborting.
+- Logs.
+- Better error treatment.
